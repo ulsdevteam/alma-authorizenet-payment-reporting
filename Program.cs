@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using alma_authorizenet_payment_reporting.AlmaTypes;
 using dotenv.net;
 using Microsoft.Extensions.Configuration;
 using AuthorizeNet.Api.Controllers;
@@ -35,10 +36,15 @@ namespace alma_authorizenet_payment_reporting
                 .WithHeader("Accept", "application/json")
                 .SetQueryParam("apikey", Config["ALMA_API_KEY"]));
 
-            var transactionsGroupedByUser = GetSettledTransactions(DateTime.Today.AddMonths(-3), DateTime.Today).GroupBy(t => t.customer?.id);
+            // TODO: Get not-yet-settled transactions, make sure transactions are not duplicated
+            var transactionsGroupedByUser = GetSettledTransactions(DateTime.Today.AddMonths(-4), DateTime.Today)
+                .Where(t => t.customer?.id is not null)
+                .GroupBy(t => t.customer.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
             {
-                if (almaUserId is null) continue;
+                var almaUser = await almaClient
+                    .Request("users", almaUserId)
+                    .GetJsonAsync<AlmaUser>();
                 var userActiveFees = await almaClient
                     .Request("users", almaUserId, "fees")
                     .SetQueryParam("status", "ACTIVE")
@@ -46,17 +52,17 @@ namespace alma_authorizenet_payment_reporting
                 var userClosedFees = await almaClient
                     .Request("users", almaUserId, "fees")
                     .SetQueryParam("status", "CLOSED")
-                    .GetJsonAsync<AlmaFees>();
+                    .GetJsonAsync<AlmaFees>();                
 
                 // TODO: this ought to be more legible, also seems to not be producing enough records
                 var feeTransactions =
-                from aNetTransaction in transactions
-                from lineItem in aNetTransaction.lineItems
-                from fee in userActiveFees.Fee.Concat(userClosedFees.Fee)
-                from almaTransaction in fee.Transaction
-                where lineItem.itemId == fee.Id
-                where aNetTransaction.transId == almaTransaction.ExternalTransactionId
-                select new FeePaymentRecord(fee, almaTransaction, aNetTransaction, lineItem);
+                    from aNetTransaction in transactions
+                    from lineItem in aNetTransaction.lineItems
+                    from fee in userActiveFees.Fee.Concat(userClosedFees.Fee)
+                    from almaTransaction in fee.Transaction
+                    where lineItem.itemId == fee.Id
+                    where aNetTransaction.transId == almaTransaction.ExternalTransactionId
+                    select new FeePaymentRecord(almaUser, fee, almaTransaction, aNetTransaction, lineItem);
                 feeTransactions = feeTransactions.ToList();
 
             }
@@ -65,8 +71,8 @@ namespace alma_authorizenet_payment_reporting
         static IEnumerable<(DateTime, DateTime)> DateIntervals(DateTime start, DateTime end, int intervalLengthInDays)
         {
             var currentStart = start;
-            while (currentStart.AddDays(intervalLengthInDays) < end) {
-                var nextStart = currentStart.AddDays(intervalLengthInDays);
+            DateTime nextStart;
+            while ((nextStart = currentStart.AddDays(intervalLengthInDays)) < end) {
                 yield return (currentStart, nextStart);
                 currentStart = nextStart;
             }
