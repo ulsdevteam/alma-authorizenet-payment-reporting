@@ -7,8 +7,10 @@ using Microsoft.Extensions.Configuration;
 using AuthorizeNet.Api.Controllers;
 using AuthorizeNet.Api.Contracts.V1;
 using AuthorizeNet.Api.Controllers.Bases;
+using Dapper;
 using Flurl.Http;
 using System.Threading.Tasks;
+using Oracle.ManagedDataAccess.Client;
 
 namespace alma_authorizenet_payment_reporting
 {
@@ -45,8 +47,15 @@ namespace alma_authorizenet_payment_reporting
                     .WithHeader("Accept", "application/json")
                     .SetQueryParam("apikey", Config["ALMA_API_KEY"]));
 
-            // TODO: Get not-yet-settled transactions, make sure transactions are not duplicated
-            var transactionsGroupedByUser = GetSettledTransactions(DateTime.Today.AddMonths(-4), DateTime.Today)
+            var transactions = GetTransactionsInDateRange(DateTime.Today.AddMonths(-12), DateTime.Today);
+            var records = await GetPaymentRecords(transactions);
+            await UpdateDatabase(records);
+        }
+
+        static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<transactionDetailsType> authorizeTransactions)
+        {
+            var records = new List<FeePaymentRecord>();
+            var transactionsGroupedByUser = authorizeTransactions
                 .Where(t => t.customer?.id is not null)
                 .GroupBy(t => t.customer.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
@@ -54,27 +63,15 @@ namespace alma_authorizenet_payment_reporting
                 var almaUser = await AlmaClient
                     .Request("users", almaUserId)
                     .GetJsonAsync<AlmaUser>();
-                var userActiveFees = await AlmaClient
-                    .Request("users", almaUserId, "fees")
-                    .SetQueryParam("status", "ACTIVE")
-                    .GetJsonAsync<AlmaFees>();
-                var userClosedFees = await AlmaClient
-                    .Request("users", almaUserId, "fees")
-                    .SetQueryParam("status", "CLOSED")
-                    .GetJsonAsync<AlmaFees>();
+                var feeLookup = (await GetAllFeesForUser(almaUserId)).ToLookup(fee => fee.Id);
 
-                // TODO: this ought to be more legible, also seems to not be producing enough records
-                var feeTransactions =
-                    from aNetTransaction in transactions
-                    from lineItem in aNetTransaction.lineItems
-                    from fee in userActiveFees.Fee.Concat(userClosedFees.Fee)
-                    from almaTransaction in fee.Transaction
-                    where lineItem.itemId == fee.Id
-                    where aNetTransaction.transId == almaTransaction.ExternalTransactionId
-                    select new FeePaymentRecord(almaUser, fee, almaTransaction, aNetTransaction, lineItem);
-                feeTransactions = feeTransactions.ToList();
-
+                foreach (var transaction in transactions)
+                foreach (var lineItem in transaction.lineItems) 
+                foreach (var fee in feeLookup[lineItem.itemId])
+                foreach (var feeTransaction in fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId))
+                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransaction, transaction, lineItem));
             }
+            return records;
         }
 
         static IEnumerable<(DateTime, DateTime)> DateIntervals(DateTime start, DateTime end, int intervalLengthInDays)
@@ -87,6 +84,25 @@ namespace alma_authorizenet_payment_reporting
                 currentStart = nextStart;
             }
             yield return (currentStart, end);
+        }
+
+        static async Task<IEnumerable<Fee>> GetAllFeesForUser(string almaUserId)
+        {
+            var feeStatuses = new[] {"ACTIVE", "CLOSED", "EXPORTED", "INDISPUTE"};
+            var allFees = await Task.WhenAll(feeStatuses.Select(async status => {
+                var fees = await AlmaClient
+                    .Request("users", almaUserId, "fees")
+                    .SetQueryParam("status", status)
+                    .GetJsonAsync<AlmaFees>();
+                return fees.Fee ?? new Fee[0];
+            }));
+            return allFees.SelectMany(fees => fees);
+        }
+
+        static IEnumerable<transactionDetailsType> GetTransactionsInDateRange(DateTime start, DateTime end)
+        {
+            return GetSettledTransactions(start, end).Concat(
+                GetUnsettledTransactions().Where(t => t.submitTimeUTC >= start && t.submitTimeUTC <= end));
         }
 
         static IEnumerable<transactionDetailsType> GetUnsettledTransactions()
@@ -171,6 +187,66 @@ namespace alma_authorizenet_payment_reporting
                 // The next call would return no transactions and break anyway, but this prevents the extra call
                 if (transactionListResponse.totalNumInResultSet < 1000) yield break;
             }
+        }
+
+        static async Task UpdateDatabase(IEnumerable<FeePaymentRecord> records)
+        {
+            var connection = new OracleConnection(Config["CONNECTION_STRING"]);
+            // check that the table exists
+            var result = await connection.QueryAsync(@"
+                select table_name
+                from user_tables
+                where table_name = :TableName
+            ", new { TableName = Config["TABLE_NAME"]});
+            if (result.Count() == 0) {
+                await connection.ExecuteAsync($@"
+                    create table ${Config["TABLE_NAME"]}
+                    (
+                        AlmaFeeId varchar2(100),
+                        AuthorizeTransactionId varchar2(100),
+                        TransactionSubmitTime date,
+                        PatronUserId varchar2(100),
+                        PatronName varchar2(100),
+                        PaymentCategory varchar2(100),
+                        PaymentAmount number,
+                        primary key(AlmaFeeId, AuthorizeTransactionId)
+                    )
+                ");
+            }
+            // insert records
+            await connection.ExecuteAsync($@"
+                begin
+                    insert into ${Config["TABLE_NAME"]}
+                    (
+                        AlmaFeeId,
+                        AuthorizeTransactionId,
+                        TransactionSubmitTime,
+                        PatronUserId,
+                        PatronName,
+                        PaymentCategory,
+                        PaymentAmount
+                    )
+                    values
+                    (
+                        :AlmaFeeId,
+                        :AuthorizeTransactionId,
+                        :TransactionSubmitTime,
+                        :PatronUserId,
+                        :PatronName,
+                        :PaymentCategory,
+                        :PaymentAmount
+                    );
+                exception when dup_val_on_index then
+                    update ${Config["TABLE_NAME"]} set
+                        TransactionSubmitTime = :TransactionSubmitTime,
+                        PatronUserId = :PatronUserId,
+                        PatronName = :PatronName,
+                        PaymentCategory = :PaymentCategory,
+                        PaymentAmount = :PaymentAmount
+                    where
+                        AlmaFeeId = :AlmaFeeId and
+                        AuthorizeTransactionId = :AuthorizeTransactionId;
+                end;", records);
         }
 
         // The Authorize.net API has a handful of different ways it signals an error condition
