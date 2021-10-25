@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using AuthorizeNet.Api.Controllers;
 using AuthorizeNet.Api.Contracts.V1;
 using AuthorizeNet.Api.Controllers.Bases;
+using CommandLine;
 using Dapper;
 using Flurl.Http;
 using System.Threading.Tasks;
@@ -47,9 +48,11 @@ namespace alma_authorizenet_payment_reporting
                     .WithHeader("Accept", "application/json")
                     .SetQueryParam("apikey", Config["ALMA_API_KEY"]));
 
-            var transactions = GetTransactionsInDateRange(DateTime.Today.AddMonths(-12), DateTime.Today);
-            var records = await GetPaymentRecords(transactions);
-            await UpdateDatabase(records);
+            await Parser.Default.ParseArguments<Options>(args).WithParsedAsync(async options => {
+                var transactions = GetTransactionsInDateRange(options.FromDate, options.ToDate ?? DateTime.Today);
+                var records = await GetPaymentRecords(transactions);
+                await UpdateDatabase(records);
+            });
         }
 
         static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<transactionDetailsType> authorizeTransactions)
@@ -101,8 +104,10 @@ namespace alma_authorizenet_payment_reporting
 
         static IEnumerable<transactionDetailsType> GetTransactionsInDateRange(DateTime start, DateTime end)
         {
-            return GetSettledTransactions(start, end).Concat(
-                GetUnsettledTransactions().Where(t => t.submitTimeUTC >= start && t.submitTimeUTC <= end));
+            start = start.ToUniversalTime();
+            end = end.ToUniversalTime();
+            return GetSettledTransactions(start, end).Concat(GetUnsettledTransactions())
+                .Where(t => t.submitTimeUTC >= start && t.submitTimeUTC <= end);
         }
 
         static IEnumerable<transactionDetailsType> GetUnsettledTransactions()
