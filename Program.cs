@@ -12,6 +12,7 @@ using Dapper;
 using Flurl.Http;
 using System.Threading.Tasks;
 using Oracle.ManagedDataAccess.Client;
+using System.Data;
 
 namespace alma_authorizenet_payment_reporting
 {
@@ -19,6 +20,7 @@ namespace alma_authorizenet_payment_reporting
     {
         private static IConfiguration Config { get; set; }
         private static IFlurlClient AlmaClient { get; set; }
+        private static Action<string> Log { get; set; }
 
         static async Task Main(string[] args)
         {
@@ -49,9 +51,17 @@ namespace alma_authorizenet_payment_reporting
                     .SetQueryParam("apikey", Config["ALMA_API_KEY"]));
 
             await Parser.Default.ParseArguments<Options>(args).WithParsedAsync(async options => {
-                var transactions = GetTransactionsInDateRange(options.FromDate, options.ToDate ?? DateTime.Today);
-                var records = await GetPaymentRecords(transactions);
-                await UpdateDatabase(records);
+                try
+                {
+                    Log = options.Log ? Console.WriteLine : (_) => {};
+                    var transactions = GetTransactionsInDateRange(options.FromDate, options.ToDate ?? DateTime.Today);
+                    var records = await GetPaymentRecords(transactions);
+                    await UpdateDatabase(records);                     
+                }
+                catch (System.Exception e)
+                {
+                    Console.Error.WriteLine(e);
+                }
             });
         }
 
@@ -197,31 +207,12 @@ namespace alma_authorizenet_payment_reporting
         static async Task UpdateDatabase(IEnumerable<FeePaymentRecord> records)
         {
             var connection = new OracleConnection(Config["CONNECTION_STRING"]);
-            // check that the table exists
-            var result = await connection.QueryAsync(@"
-                select table_name
-                from user_tables
-                where table_name = :TableName
-            ", new { TableName = Config["TABLE_NAME"]});
-            if (result.Count() == 0) {
-                await connection.ExecuteAsync($@"
-                    create table ${Config["TABLE_NAME"]}
-                    (
-                        AlmaFeeId varchar2(100),
-                        AuthorizeTransactionId varchar2(100),
-                        TransactionSubmitTime date,
-                        PatronUserId varchar2(100),
-                        PatronName varchar2(100),
-                        PaymentCategory varchar2(100),
-                        PaymentAmount number,
-                        primary key(AlmaFeeId, AuthorizeTransactionId)
-                    )
-                ");
-            }
+            await EnsureTableExists(connection);
             // insert records
+            Log("Inserting records into table.");
             await connection.ExecuteAsync($@"
                 begin
-                    insert into ${Config["TABLE_NAME"]}
+                    insert into {Config["TABLE_NAME"]}
                     (
                         AlmaFeeId,
                         AuthorizeTransactionId,
@@ -242,7 +233,7 @@ namespace alma_authorizenet_payment_reporting
                         :PaymentAmount
                     );
                 exception when dup_val_on_index then
-                    update ${Config["TABLE_NAME"]} set
+                    update {Config["TABLE_NAME"]} set
                         TransactionSubmitTime = :TransactionSubmitTime,
                         PatronUserId = :PatronUserId,
                         PatronName = :PatronName,
@@ -252,6 +243,35 @@ namespace alma_authorizenet_payment_reporting
                         AlmaFeeId = :AlmaFeeId and
                         AuthorizeTransactionId = :AuthorizeTransactionId;
                 end;", records);
+        }
+
+        static async Task EnsureTableExists(IDbConnection connection)
+        {
+            Log($"Checking if table '{Config["TABLE_NAME"]}' exists.");
+            var result = await connection.QueryAsync(@"
+                select table_name
+                from user_tables
+                where table_name = :TableName
+            ", new { TableName = Config["TABLE_NAME"] });
+            if (result.Count() == 0)
+            {
+                Log("Table does not exist, creating table.");
+                await connection.ExecuteAsync($@"
+                    create table {Config["TABLE_NAME"]}
+                    (
+                        AlmaFeeId varchar2(100),
+                        AuthorizeTransactionId varchar2(100),
+                        TransactionSubmitTime date,
+                        PatronUserId varchar2(100),
+                        PatronName varchar2(100),
+                        PaymentCategory varchar2(100),
+                        PaymentAmount number,
+                        primary key(AlmaFeeId, AuthorizeTransactionId)
+                    )
+                ");
+            } else {
+                Log("Table exists.");
+            }
         }
 
         // The Authorize.net API has a handful of different ways it signals an error condition
