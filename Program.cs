@@ -53,10 +53,14 @@ namespace alma_authorizenet_payment_reporting
             await Parser.Default.ParseArguments<Options>(args).WithParsedAsync(async options => {
                 try
                 {
-                    Log = options.Log ? Console.WriteLine : (_) => {};
-                    var transactions = GetTransactionsInDateRange(options.FromDate, options.ToDate ?? DateTime.Today);
+                    Log = options.Log ? Console.WriteLine : (_) => {};            
+                    using var connection = new OracleConnection(Config["CONNECTION_STRING"]);
+                    await EnsureTableExists(connection);
+                    var transactions = GetTransactionsInDateRange(
+                        options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
+                        options.ToDate ?? DateTime.Today);
                     var records = await GetPaymentRecords(transactions);
-                    await UpdateDatabase(records);                     
+                    await UpdateDatabase(connection, records);                     
                 }
                 catch (System.Exception e)
                 {
@@ -116,12 +120,14 @@ namespace alma_authorizenet_payment_reporting
         {
             start = start.ToUniversalTime();
             end = end.ToUniversalTime();
+            Log($"Getting Authorize.net transactions between {start.ToLocalTime()} and {end.ToLocalTime()}");
             return GetSettledTransactions(start, end).Concat(GetUnsettledTransactions())
                 .Where(t => t.submitTimeUTC >= start && t.submitTimeUTC <= end);
         }
 
         static IEnumerable<transactionDetailsType> GetUnsettledTransactions()
         {
+            Log("Getting transactions that are not yet settled");
             // Page offset starts at 1
             var pageOffset = 0;
             while (true)
@@ -174,6 +180,7 @@ namespace alma_authorizenet_payment_reporting
 
         static IEnumerable<transactionDetailsType> GetBatchTransactions(string batchId)
         {
+            Log($"Getting settled transactions in batch {batchId}");
             // Page offset starts at 1
             var pageOffset = 0;
             while (true)
@@ -204,12 +211,13 @@ namespace alma_authorizenet_payment_reporting
             }
         }
 
-        static async Task UpdateDatabase(IEnumerable<FeePaymentRecord> records)
+        static async Task UpdateDatabase(IDbConnection connection, List<FeePaymentRecord> records)
         {
-            var connection = new OracleConnection(Config["CONNECTION_STRING"]);
-            await EnsureTableExists(connection);
-            // insert records
-            Log("Inserting records into table.");
+            if (records.Count == 0) {
+                Log("No transactions in this date range.");
+                return;
+            }
+            Log($"Updating table with {records.Count} records.");
             await connection.ExecuteAsync($@"
                 begin
                     insert into {Config["TABLE_NAME"]}
@@ -272,6 +280,15 @@ namespace alma_authorizenet_payment_reporting
             } else {
                 Log("Table exists.");
             }
+        }
+
+        static async Task<DateTime?> GetMostRecentTransactionDate(IDbConnection connection)
+        {
+            Log("Getting most recent transaction date");
+            return await connection.QueryFirstOrDefaultAsync<DateTime?>($@"
+                select TransactionSubmitTime from {Config["TABLE_NAME"]}
+                order by TransactionSubmitTime desc
+                fetch next 1 rows only");
         }
 
         // The Authorize.net API has a handful of different ways it signals an error condition

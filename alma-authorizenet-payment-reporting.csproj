@@ -4,6 +4,8 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net5.0</TargetFramework>
     <RootNamespace>alma_authorizenet_payment_reporting</RootNamespace>
+    <Company>University of Pittsburgh</Company>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
