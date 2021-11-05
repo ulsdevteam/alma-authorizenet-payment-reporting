@@ -69,51 +69,42 @@ namespace alma_authorizenet_payment_reporting
             });
         }
 
-        static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<transactionDetailsType> authorizeTransactions)
+        static async Task EnsureTableExists(IDbConnection connection)
         {
-            var records = new List<FeePaymentRecord>();
-            var transactionsGroupedByUser = authorizeTransactions
-                .Where(t => t.customer?.id is not null)
-                .GroupBy(t => t.customer.id);
-            foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
+            Log($"Checking if table '{Config["TABLE_NAME"]}' exists.");
+            var result = await connection.QueryAsync(@"
+                select table_name
+                from user_tables
+                where table_name = :TableName
+            ", new { TableName = Config["TABLE_NAME"] });
+            if (result.Count() == 0)
             {
-                var almaUser = await AlmaClient
-                    .Request("users", almaUserId)
-                    .GetJsonAsync<AlmaUser>();
-                var feeLookup = (await GetAllFeesForUser(almaUserId)).ToLookup(fee => fee.Id);
-
-                foreach (var transaction in transactions)
-                foreach (var lineItem in transaction.lineItems) 
-                foreach (var fee in feeLookup[lineItem.itemId])
-                foreach (var feeTransaction in fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId))
-                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransaction, transaction, lineItem));
+                Log("Table does not exist, creating table.");
+                await connection.ExecuteAsync($@"
+                    create table {Config["TABLE_NAME"]}
+                    (
+                        AlmaFeeId varchar2(100),
+                        AuthorizeTransactionId varchar2(100),
+                        TransactionSubmitTime date,
+                        PatronUserId varchar2(100),
+                        PatronName varchar2(100),
+                        PaymentCategory varchar2(100),
+                        PaymentAmount number,
+                        primary key(AlmaFeeId, AuthorizeTransactionId)
+                    )
+                ");
+            } else {
+                Log("Table exists.");
             }
-            return records;
         }
 
-        static IEnumerable<(DateTime, DateTime)> DateIntervals(DateTime start, DateTime end, int intervalLengthInDays)
+        static async Task<DateTime?> GetMostRecentTransactionDate(IDbConnection connection)
         {
-            var currentStart = start;
-            DateTime nextStart;
-            while ((nextStart = currentStart.AddDays(intervalLengthInDays)) < end)
-            {
-                yield return (currentStart, nextStart);
-                currentStart = nextStart;
-            }
-            yield return (currentStart, end);
-        }
-
-        static async Task<IEnumerable<Fee>> GetAllFeesForUser(string almaUserId)
-        {
-            var feeStatuses = new[] {"ACTIVE", "CLOSED", "EXPORTED", "INDISPUTE"};
-            var allFees = await Task.WhenAll(feeStatuses.Select(async status => {
-                var fees = await AlmaClient
-                    .Request("users", almaUserId, "fees")
-                    .SetQueryParam("status", status)
-                    .GetJsonAsync<AlmaFees>();
-                return fees.Fee ?? new Fee[0];
-            }));
-            return allFees.SelectMany(fees => fees);
+            Log("Getting most recent transaction date");
+            return await connection.QueryFirstOrDefaultAsync<DateTime?>($@"
+                select TransactionSubmitTime from {Config["TABLE_NAME"]}
+                order by TransactionSubmitTime desc
+                fetch next 1 rows only");
         }
 
         static IEnumerable<transactionDetailsType> GetTransactionsInDateRange(DateTime start, DateTime end)
@@ -155,6 +146,18 @@ namespace alma_authorizenet_payment_reporting
                 // The next call would return no transactions and break anyway, but this prevents the extra call
                 if (listResponse.totalNumInResultSet < 1000) yield break;
             }
+        }
+
+        static IEnumerable<(DateTime, DateTime)> DateIntervals(DateTime start, DateTime end, int intervalLengthInDays)
+        {
+            var currentStart = start;
+            DateTime nextStart;
+            while ((nextStart = currentStart.AddDays(intervalLengthInDays)) < end)
+            {
+                yield return (currentStart, nextStart);
+                currentStart = nextStart;
+            }
+            yield return (currentStart, end);
         }
 
         static IEnumerable<transactionDetailsType> GetSettledTransactions(DateTime fromDate, DateTime toDate)
@@ -211,6 +214,41 @@ namespace alma_authorizenet_payment_reporting
             }
         }
 
+        static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<transactionDetailsType> authorizeTransactions)
+        {
+            var records = new List<FeePaymentRecord>();
+            var transactionsGroupedByUser = authorizeTransactions
+                .Where(t => t.customer?.id is not null)
+                .GroupBy(t => t.customer.id);
+            foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
+            {
+                var almaUser = await AlmaClient
+                    .Request("users", almaUserId)
+                    .GetJsonAsync<AlmaUser>();
+                var feeLookup = (await GetAllFeesForUser(almaUserId)).ToLookup(fee => fee.Id);
+
+                foreach (var transaction in transactions)
+                foreach (var lineItem in transaction.lineItems) 
+                foreach (var fee in feeLookup[lineItem.itemId])
+                foreach (var feeTransaction in fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId))
+                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransaction, transaction, lineItem));
+            }
+            return records;
+        }
+
+        static async Task<IEnumerable<Fee>> GetAllFeesForUser(string almaUserId)
+        {
+            var feeStatuses = new[] {"ACTIVE", "CLOSED", "EXPORTED", "INDISPUTE"};
+            var allFees = await Task.WhenAll(feeStatuses.Select(async status => {
+                var fees = await AlmaClient
+                    .Request("users", almaUserId, "fees")
+                    .SetQueryParam("status", status)
+                    .GetJsonAsync<AlmaFees>();
+                return fees.Fee ?? new Fee[0];
+            }));
+            return allFees.SelectMany(fees => fees);
+        }
+
         static async Task UpdateDatabase(IDbConnection connection, List<FeePaymentRecord> records)
         {
             if (records.Count == 0) {
@@ -251,44 +289,6 @@ namespace alma_authorizenet_payment_reporting
                         AlmaFeeId = :AlmaFeeId and
                         AuthorizeTransactionId = :AuthorizeTransactionId;
                 end;", records);
-        }
-
-        static async Task EnsureTableExists(IDbConnection connection)
-        {
-            Log($"Checking if table '{Config["TABLE_NAME"]}' exists.");
-            var result = await connection.QueryAsync(@"
-                select table_name
-                from user_tables
-                where table_name = :TableName
-            ", new { TableName = Config["TABLE_NAME"] });
-            if (result.Count() == 0)
-            {
-                Log("Table does not exist, creating table.");
-                await connection.ExecuteAsync($@"
-                    create table {Config["TABLE_NAME"]}
-                    (
-                        AlmaFeeId varchar2(100),
-                        AuthorizeTransactionId varchar2(100),
-                        TransactionSubmitTime date,
-                        PatronUserId varchar2(100),
-                        PatronName varchar2(100),
-                        PaymentCategory varchar2(100),
-                        PaymentAmount number,
-                        primary key(AlmaFeeId, AuthorizeTransactionId)
-                    )
-                ");
-            } else {
-                Log("Table exists.");
-            }
-        }
-
-        static async Task<DateTime?> GetMostRecentTransactionDate(IDbConnection connection)
-        {
-            Log("Getting most recent transaction date");
-            return await connection.QueryFirstOrDefaultAsync<DateTime?>($@"
-                select TransactionSubmitTime from {Config["TABLE_NAME"]}
-                order by TransactionSubmitTime desc
-                fetch next 1 rows only");
         }
 
         // The Authorize.net API has a handful of different ways it signals an error condition
