@@ -174,9 +174,11 @@ namespace alma_authorizenet_payment_reporting
                 var batchResponse = batchController.ExecuteAndCheckError();
                 if (batchResponse.batchList is null) continue;
                 foreach (var batch in batchResponse.batchList)
-                foreach (var transaction in GetBatchTransactions(batch.batchId))
                 {
-                    yield return transaction;
+                    foreach (var transaction in GetBatchTransactions(batch.batchId))
+                    {
+                        yield return transaction;
+                    }
                 }
             }
         }
@@ -225,15 +227,66 @@ namespace alma_authorizenet_payment_reporting
                 var almaUser = await AlmaClient
                     .Request("users", almaUserId)
                     .GetJsonAsync<AlmaUser>();
-                var feeLookup = (await GetAllFeesForUser(almaUserId)).ToLookup(fee => fee.Id);
+                var feeLookup = (await GetAllFeesForUser(almaUserId)).ToDictionary(fee => fee.Id);
 
                 foreach (var transaction in transactions)
-                foreach (var lineItem in transaction.lineItems) 
-                foreach (var fee in feeLookup[lineItem.itemId])
-                foreach (var feeTransaction in fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId))
-                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransaction, transaction, lineItem));
+                {
+                    foreach (var lineItem in transaction.lineItems)
+                    {
+                        if (feeLookup.TryGetValue(lineItem.itemId, out var fee))
+                        {
+                            var feeTransactions = fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId).ToList();
+                            switch (feeTransactions.Count)
+                            {
+                                case 1: 
+                                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransactions[0], transaction, lineItem));
+                                    break;
+                                case 0:
+                                    LogMissingFeeTransactionError(almaUser, transaction, fee);
+                                    break;
+                                default:
+                                    LogTooManyFeeTransactionsError(almaUser, transaction, fee);
+                                    break;
+                            }
+                        }
+                        else
+                        {
+                            LogMissingFeeError(almaUser, transaction, lineItem);
+                        }
+                    }
+                }                    
             }
             return records;
+        }
+
+        static void LogMissingFeeTransactionError(AlmaUser almaUser, transactionDetailsType transaction, Fee fee)
+        {
+            Console.Error.WriteLine(string.Join(Environment.NewLine, 
+                "ISSUE: Failed to match an Authorize.net transaction with an Alma transaction.",
+                $"Transaction Id: {transaction.transId}",
+                $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
+                $"Alma User Id: {almaUser.PrimaryId}",
+                $"Alma Fee Id: {fee.Id}"));
+        }
+
+        static void LogTooManyFeeTransactionsError(AlmaUser almaUser, transactionDetailsType transaction, Fee fee)
+        {
+            Console.Error.WriteLine(string.Join(Environment.NewLine, 
+                "ISSUE: Multiple Alma transactions associated with one Authorize.net transaction.",
+                $"Transaction Id: {transaction.transId}",
+                $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
+                $"Alma User Id: {almaUser.PrimaryId}",
+                $"Alma Fee Id: {fee.Id}"));
+        }
+
+        static void LogMissingFeeError(AlmaUser almaUser, transactionDetailsType transaction, lineItemType lineItem)
+        {
+            Console.Error.WriteLine(string.Join(Environment.NewLine, 
+                "ISSUE: Failed to match an Authorize.net transaction with an Alma fee.",
+                $"Transaction Id: {transaction.transId}",
+                $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
+                $"Alma User Id: {almaUser.PrimaryId}",
+                $"Line Item Id (Expected Alma Fee Id): {lineItem.itemId}"));
         }
 
         static async Task<IEnumerable<Fee>> GetAllFeesForUser(string almaUserId)
