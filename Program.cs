@@ -54,13 +54,14 @@ namespace alma_authorizenet_payment_reporting
                 try
                 {
                     Log = options.Log ? Console.WriteLine : (_) => {};            
-                    using var connection = new OracleConnection(Config["CONNECTION_STRING"]);
+                    using var connection = options.DryRun ? null : new OracleConnection(Config["CONNECTION_STRING"]);
                     await EnsureTableExists(connection);
                     var transactions = GetTransactionsInDateRange(
                         options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
                         options.ToDate ?? DateTime.Today);
                     var records = await GetPaymentRecords(transactions);
-                    await UpdateDatabase(connection, records);                     
+                    await UpdateDatabase(connection, records);
+                    if (options.DryRun) Log($"Got {records.Count} records.");
                 }
                 catch (System.Exception e)
                 {
@@ -71,6 +72,7 @@ namespace alma_authorizenet_payment_reporting
 
         static async Task EnsureTableExists(IDbConnection connection)
         {
+            if (connection is null) return;
             Log($"Checking if table '{Config["TABLE_NAME"]}' exists.");
             var result = await connection.QueryAsync(@"
                 select table_name
@@ -100,6 +102,7 @@ namespace alma_authorizenet_payment_reporting
 
         static async Task<DateTime?> GetMostRecentTransactionDate(IDbConnection connection)
         {
+            if (connection is null) return null;
             Log("Getting most recent transaction date");
             return await connection.QueryFirstOrDefaultAsync<DateTime?>($@"
                 select TransactionSubmitTime from {Config["TABLE_NAME"]}
@@ -304,6 +307,7 @@ namespace alma_authorizenet_payment_reporting
 
         static async Task UpdateDatabase(IDbConnection connection, List<FeePaymentRecord> records)
         {
+            if (connection is null) return;
             if (records.Count == 0) {
                 Log("No transactions in this date range.");
                 return;

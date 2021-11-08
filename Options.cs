@@ -11,7 +11,9 @@ namespace alma_authorizenet_payment_reporting
         public DateTime? FromDate { get; set;}
         [Option('t', "to", Required = false, HelpText = "Get transactions up to this date. Defaults to today.")]
         public DateTime? ToDate { get; set; }
-        [Option('l', "log", Required = false, HelpText = "Log messages to the console when set.")]
+        [Option('l', "log", Required = false, HelpText = "Log messages to stdout when set.")]
         public bool Log { get; set; }
+        [Option('d', "dryrun", Required = false, HelpText = "Will not connect to database when set.")]
+        public bool DryRun { get; set; }
     }
 }
