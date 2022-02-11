@@ -18,9 +18,9 @@ namespace alma_authorizenet_payment_reporting
 {
     static class Program
     {
-        private static IConfiguration Config { get; set; }
-        private static IFlurlClient AlmaClient { get; set; }
-        private static Action<string> Log { get; set; }
+        static IConfiguration Config { get; set; }
+        static IFlurlClient AlmaClient { get; set; }
+        static Action<string> Log { get; set; }
 
         static async Task Main(string[] args)
         {
@@ -36,7 +36,8 @@ namespace alma_authorizenet_payment_reporting
                 Item = Config["AUTHORIZE_API_KEY"]
             };
             // TODO: support for custom authorize.net environments?
-            ApiOperationBase<ANetApiRequest, ANetApiResponse>.RunEnvironment = Config["AUTHORIZE_ENVIRONMENT"]?.ToUpper() switch {
+            ApiOperationBase<ANetApiRequest, ANetApiResponse>.RunEnvironment = Config["AUTHORIZE_ENVIRONMENT"]?.ToUpper() switch
+            {
                 "SANDBOX" => AuthorizeNet.Environment.SANDBOX,
                 "PRODUCTION" => AuthorizeNet.Environment.PRODUCTION,
                 "LOCAL_VM" => AuthorizeNet.Environment.LOCAL_VM,
@@ -50,27 +51,45 @@ namespace alma_authorizenet_payment_reporting
                     .WithHeader("Accept", "application/json")
                     .SetQueryParam("apikey", Config["ALMA_API_KEY"]));
 
-            await Parser.Default.ParseArguments<Options>(args).WithParsedAsync(async options => {
-                try
-                {
-                    Log = options.Log ? Console.WriteLine : (_) => {};            
-                    using var connection = options.DryRun ? null : new OracleConnection(Config["CONNECTION_STRING"]);
-                    await EnsureTableExists(connection);
-                    var transactions = GetTransactionsInDateRange(
-                        options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
-                        options.ToDate ?? DateTime.Today);
-                    var records = await GetPaymentRecords(transactions);
-                    await UpdateDatabase(connection, records);
-                    if (options.DryRun) Log($"Got {records.Count} records.");
-                }
-                catch (System.Exception e)
-                {
-                    Console.Error.WriteLine(e);
-                }
+            var commandLineParser = new Parser(config => {
+                config.AutoHelp = true;
+                config.CaseInsensitiveEnumValues = true;
+                config.HelpWriter = Console.Error;
             });
+
+            await commandLineParser.ParseArguments<Options, MigrateOptions>(args).MapResult(
+                async (Options options) =>
+                {
+                    try
+                    {
+                        Log = options.Log ? Console.WriteLine : (_) => { };
+                        using var connection = options.DryRun ? null : new OracleConnection(Config["CONNECTION_STRING"]);
+                        var schema = Schema.Get(options.SchemaVersion, Config["TABLE_NAME"]);
+                        await EnsureTableExists(connection, schema);
+                        var transactions = GetSettledTransactions(
+                            options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
+                            options.ToDate ?? DateTime.Today);
+                        var records = await GetPaymentRecords(transactions);
+                        await UpdateDatabase(connection, schema, records);
+                        if (options.DryRun) Log($"Got {records.Count} records.");
+                    }
+                    catch (System.Exception e)
+                    {
+                        Console.Error.WriteLine(e);
+                    }
+                },
+                async (MigrateOptions migrateOptions) => { 
+                    using var connection = new OracleConnection(Config["CONNECTION_STRING"]);
+                    var currentSchema = Schema.Get(migrateOptions.CurrentSchema, Config["TABLE_NAME"]);
+                    var newSchema = Schema.Get(migrateOptions.NewSchema, Config["TABLE_NAME"]);
+                    await MigrateTable(connection, currentSchema, newSchema);
+                },
+                errors => Task.CompletedTask
+                )
+                ;
         }
 
-        static async Task EnsureTableExists(IDbConnection connection)
+        static async Task EnsureTableExists(IDbConnection connection, Schema schema)
         {
             if (connection is null) return;
             Log($"Checking if table '{Config["TABLE_NAME"]}' exists.");
@@ -79,23 +98,13 @@ namespace alma_authorizenet_payment_reporting
                 from user_tables
                 where table_name = :TableName
             ", new { TableName = Config["TABLE_NAME"] });
-            if (result.Count() == 0)
+            if (!result.Any())
             {
                 Log("Table does not exist, creating table.");
-                await connection.ExecuteAsync($@"
-                    create table {Config["TABLE_NAME"]}
-                    (
-                        AlmaFeeId varchar2(100),
-                        AuthorizeTransactionId varchar2(100),
-                        TransactionSubmitTime date,
-                        PatronUserId varchar2(100),
-                        PatronName varchar2(100),
-                        PaymentCategory varchar2(100),
-                        PaymentAmount number,
-                        primary key(AlmaFeeId, AuthorizeTransactionId)
-                    )
-                ");
-            } else {
+                await connection.ExecuteAsync(schema.TableCreationSql());
+            }
+            else
+            {
                 Log("Table exists.");
             }
         }
@@ -110,13 +119,14 @@ namespace alma_authorizenet_payment_reporting
                 fetch next 1 rows only");
         }
 
-        static IEnumerable<transactionDetailsType> GetTransactionsInDateRange(DateTime start, DateTime end)
+        static IEnumerable<AuthorizeTransaction> GetTransactionsInDateRange(DateTime start, DateTime end)
         {
             start = start.ToUniversalTime();
             end = end.ToUniversalTime();
             Log($"Getting Authorize.net transactions between {start.ToLocalTime()} and {end.ToLocalTime()}");
-            return GetSettledTransactions(start, end).Concat(GetUnsettledTransactions())
-                .Where(t => t.submitTimeUTC >= start && t.submitTimeUTC <= end);
+            return GetSettledTransactions(start, end)
+                .Concat(GetUnsettledTransactions().Select(t => new AuthorizeTransaction(t, null)))
+                .Where(t => t.transaction.submitTimeUTC >= start && t.transaction.submitTimeUTC <= end);
         }
 
         static IEnumerable<transactionDetailsType> GetUnsettledTransactions()
@@ -163,9 +173,9 @@ namespace alma_authorizenet_payment_reporting
             yield return (currentStart, end);
         }
 
-        static IEnumerable<transactionDetailsType> GetSettledTransactions(DateTime fromDate, DateTime toDate)
+        static IEnumerable<AuthorizeTransaction> GetSettledTransactions(DateTime fromDate, DateTime toDate)
         {
-            foreach (var (batchStartDate, batchEndDate) in DateIntervals(fromDate, toDate, 31))
+            foreach (var (batchStartDate, batchEndDate) in DateIntervals(fromDate.ToUniversalTime(), toDate.ToUniversalTime(), 31))
             {
                 var batchRequest = new getSettledBatchListRequest
                 {
@@ -179,8 +189,8 @@ namespace alma_authorizenet_payment_reporting
                 foreach (var batch in batchResponse.batchList)
                 {
                     foreach (var transaction in GetBatchTransactions(batch.batchId))
-                    {
-                        yield return transaction;
+                    {                        
+                        yield return new AuthorizeTransaction(transaction, batch);
                     }
                 }
             }
@@ -194,8 +204,8 @@ namespace alma_authorizenet_payment_reporting
             while (true)
             {
                 ++pageOffset;
-                var transactionListRequest = new getTransactionListRequest 
-                { 
+                var transactionListRequest = new getTransactionListRequest
+                {
                     batchId = batchId,
                     paging = new Paging
                     {
@@ -219,12 +229,12 @@ namespace alma_authorizenet_payment_reporting
             }
         }
 
-        static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<transactionDetailsType> authorizeTransactions)
+        static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<AuthorizeTransaction> authorizeTransactions)
         {
             var records = new List<FeePaymentRecord>();
             var transactionsGroupedByUser = authorizeTransactions
-                .Where(t => t.customer?.id is not null)
-                .GroupBy(t => t.customer.id);
+                .Where(t => t.transaction.customer?.id is not null)
+                .GroupBy(t => t.transaction.customer.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
             {
                 var almaUser = await AlmaClient
@@ -232,7 +242,7 @@ namespace alma_authorizenet_payment_reporting
                     .GetJsonAsync<AlmaUser>();
                 var feeLookup = (await GetAllFeesForUser(almaUserId)).ToDictionary(fee => fee.Id);
 
-                foreach (var transaction in transactions)
+                foreach (var (transaction, batch) in transactions)
                 {
                     foreach (var lineItem in transaction.lineItems)
                     {
@@ -241,8 +251,8 @@ namespace alma_authorizenet_payment_reporting
                             var feeTransactions = fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId).ToList();
                             switch (feeTransactions.Count)
                             {
-                                case 1: 
-                                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransactions[0], transaction, lineItem));
+                                case 1:
+                                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransactions[0], transaction, lineItem, batch));
                                     break;
                                 case 0:
                                     LogMissingFeeTransactionError(almaUser, transaction, fee);
@@ -257,14 +267,14 @@ namespace alma_authorizenet_payment_reporting
                             LogMissingFeeError(almaUser, transaction, lineItem);
                         }
                     }
-                }                    
+                }
             }
             return records;
         }
 
         static void LogMissingFeeTransactionError(AlmaUser almaUser, transactionDetailsType transaction, Fee fee)
         {
-            Console.Error.WriteLine(string.Join(Environment.NewLine, 
+            Console.Error.WriteLine(string.Join(Environment.NewLine,
                 "ISSUE: Failed to match an Authorize.net transaction with an Alma transaction.",
                 $"Transaction Id: {transaction.transId}",
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
@@ -274,7 +284,7 @@ namespace alma_authorizenet_payment_reporting
 
         static void LogTooManyFeeTransactionsError(AlmaUser almaUser, transactionDetailsType transaction, Fee fee)
         {
-            Console.Error.WriteLine(string.Join(Environment.NewLine, 
+            Console.Error.WriteLine(string.Join(Environment.NewLine,
                 "ISSUE: Multiple Alma transactions associated with one Authorize.net transaction.",
                 $"Transaction Id: {transaction.transId}",
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
@@ -284,7 +294,7 @@ namespace alma_authorizenet_payment_reporting
 
         static void LogMissingFeeError(AlmaUser almaUser, transactionDetailsType transaction, lineItemType lineItem)
         {
-            Console.Error.WriteLine(string.Join(Environment.NewLine, 
+            Console.Error.WriteLine(string.Join(Environment.NewLine,
                 "ISSUE: Failed to match an Authorize.net transaction with an Alma fee.",
                 $"Transaction Id: {transaction.transId}",
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
@@ -294,8 +304,9 @@ namespace alma_authorizenet_payment_reporting
 
         static async Task<IEnumerable<Fee>> GetAllFeesForUser(string almaUserId)
         {
-            var feeStatuses = new[] {"ACTIVE", "CLOSED", "EXPORTED", "INDISPUTE"};
-            var allFees = await Task.WhenAll(feeStatuses.Select(async status => {
+            var feeStatuses = new[] { "ACTIVE", "CLOSED", "EXPORTED", "INDISPUTE" };
+            var allFees = await Task.WhenAll(feeStatuses.Select(async status =>
+            {
                 var fees = await AlmaClient
                     .Request("users", almaUserId, "fees")
                     .SetQueryParam("status", status)
@@ -305,47 +316,21 @@ namespace alma_authorizenet_payment_reporting
             return allFees.SelectMany(fees => fees);
         }
 
-        static async Task UpdateDatabase(IDbConnection connection, List<FeePaymentRecord> records)
+        static async Task UpdateDatabase(IDbConnection connection, Schema schema, List<FeePaymentRecord> records)
         {
             if (connection is null) return;
-            if (records.Count == 0) {
+            if (records.Count == 0)
+            {
                 Log("No transactions in this date range.");
                 return;
             }
             Log($"Updating table with {records.Count} records.");
-            await connection.ExecuteAsync($@"
-                begin
-                    insert into {Config["TABLE_NAME"]}
-                    (
-                        AlmaFeeId,
-                        AuthorizeTransactionId,
-                        TransactionSubmitTime,
-                        PatronUserId,
-                        PatronName,
-                        PaymentCategory,
-                        PaymentAmount
-                    )
-                    values
-                    (
-                        :AlmaFeeId,
-                        :AuthorizeTransactionId,
-                        :TransactionSubmitTime,
-                        :PatronUserId,
-                        :PatronName,
-                        :PaymentCategory,
-                        :PaymentAmount
-                    );
-                exception when dup_val_on_index then
-                    update {Config["TABLE_NAME"]} set
-                        TransactionSubmitTime = :TransactionSubmitTime,
-                        PatronUserId = :PatronUserId,
-                        PatronName = :PatronName,
-                        PaymentCategory = :PaymentCategory,
-                        PaymentAmount = :PaymentAmount
-                    where
-                        AlmaFeeId = :AlmaFeeId and
-                        AuthorizeTransactionId = :AuthorizeTransactionId;
-                end;", records);
+            await connection.ExecuteAsync(schema.InsertDataSql(), records);
+        }
+
+        static async Task MigrateTable(IDbConnection connection, Schema currentSchema, Schema newSchema) {
+            Log($"Migrating table from version {currentSchema.Version} to {newSchema.Version}.");
+            await connection.ExecuteAsync(newSchema.MigrationSql(currentSchema));
         }
 
         // The Authorize.net API has a handful of different ways it signals an error condition
