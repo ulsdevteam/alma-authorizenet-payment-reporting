@@ -72,7 +72,19 @@ namespace alma_authorizenet_payment_reporting
 
         public override string MigrationSql(Schema currentSchema)
         {
-            throw new NotImplementedException();
+            if (currentSchema.Version == this.Version)
+                return null;
+            else if (currentSchema.Version == SchemaVersion.V2)
+            {
+                return $@"
+                    alter table {TableName} drop (
+                        TransactionSettledTime,
+                        TransactionStatus,
+                        SettlementState
+                    )";
+            }
+            else
+                throw new NotImplementedException();
         }
 
         public override string TableCreationSql() => $@"
@@ -153,7 +165,9 @@ namespace alma_authorizenet_payment_reporting
 
         public override string MigrationSql(Schema currentSchema)
         {
-            if (currentSchema.Version == SchemaVersion.V1)
+            if (currentSchema.Version == this.Version)
+                return null;
+            else if (currentSchema.Version == SchemaVersion.V1)
             {
                 return $@"
                     alter table {TableName} add (

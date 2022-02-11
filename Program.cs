@@ -329,6 +329,7 @@ namespace alma_authorizenet_payment_reporting
         }
 
         static async Task MigrateTable(IDbConnection connection, Schema currentSchema, Schema newSchema) {
+            if (currentSchema.Version == newSchema.Version) return;
             Log($"Migrating table from version {currentSchema.Version} to {newSchema.Version}.");
             await connection.ExecuteAsync(newSchema.MigrationSql(currentSchema));
         }
