@@ -88,6 +88,20 @@ namespace alma_authorizenet_payment_reporting
                 primary key(AlmaFeeId, AuthorizeTransactionId)
             )
         ";
+
+        private string TableCreationSql(string tableName) => $@"
+            create table {TableName}
+            (
+                AlmaFeeId varchar2(100),
+                AuthorizeTransactionId varchar2(100),
+                TransactionSubmitTime date,
+                PatronUserId varchar2(100),
+                PatronName varchar2(100),
+                PaymentCategory varchar2(100),
+                PaymentAmount number,
+                primary key(AlmaFeeId, AuthorizeTransactionId)
+            )
+        ";
     }
 
     class SchemaV2 : Schema
@@ -139,8 +153,19 @@ namespace alma_authorizenet_payment_reporting
 
         public override string MigrationSql(Schema currentSchema)
         {
-            throw new NotImplementedException();
+            if (currentSchema.Version == SchemaVersion.V1)
+            {
+                return $@"
+                    alter table {TableName} add (
+                        TransactionSettledTime date null,
+                        TransactionStatus varchar2(100),
+                        SettlementState varchar2(100) null
+                    )";
+            }
+            else
+                throw new NotImplementedException();
         }
+
 
         public override string TableCreationSql() => $@"
             create table {TableName}
@@ -148,9 +173,9 @@ namespace alma_authorizenet_payment_reporting
                 AlmaFeeId varchar2(100),
                 AuthorizeTransactionId varchar2(100),
                 TransactionSubmitTime date,
-                TransactionSettledTime date,
+                TransactionSettledTime date null,
                 TransactionStatus varchar2(100),
-                SettlementState varchar2(100),
+                SettlementState varchar2(100) null,
                 PatronUserId varchar2(100),
                 PatronName varchar2(100),
                 PaymentCategory varchar2(100),
