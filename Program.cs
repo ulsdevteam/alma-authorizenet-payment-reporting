@@ -262,7 +262,7 @@ namespace alma_authorizenet_payment_reporting
                                     break;
                             }
                         }
-                        else
+                        else if (transaction.transactionStatus != "declined")
                         {
                             LogMissingFeeError(almaUser, transaction, lineItem);
                         }
@@ -277,6 +277,7 @@ namespace alma_authorizenet_payment_reporting
             Console.Error.WriteLine(string.Join(Environment.NewLine,
                 "ISSUE: Failed to match an Authorize.net transaction with an Alma transaction.",
                 $"Transaction Id: {transaction.transId}",
+                $"Transaction Status: {transaction.transactionStatus}",
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
                 $"Alma User Id: {almaUser.PrimaryId}",
                 $"Alma Fee Id: {fee.Id}"));
@@ -287,6 +288,7 @@ namespace alma_authorizenet_payment_reporting
             Console.Error.WriteLine(string.Join(Environment.NewLine,
                 "ISSUE: Multiple Alma transactions associated with one Authorize.net transaction.",
                 $"Transaction Id: {transaction.transId}",
+                $"Transaction Status: {transaction.transactionStatus}",
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
                 $"Alma User Id: {almaUser.PrimaryId}",
                 $"Alma Fee Id: {fee.Id}"));
@@ -297,6 +299,7 @@ namespace alma_authorizenet_payment_reporting
             Console.Error.WriteLine(string.Join(Environment.NewLine,
                 "ISSUE: Failed to match an Authorize.net transaction with an Alma fee.",
                 $"Transaction Id: {transaction.transId}",
+                $"Transaction Status: {transaction.transactionStatus}",
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
                 $"Alma User Id: {almaUser.PrimaryId}",
                 $"Line Item Id (Expected Alma Fee Id): {lineItem.itemId}"));
