@@ -65,6 +65,7 @@ namespace alma_authorizenet_payment_reporting
                         Log = options.Log ? Console.WriteLine : (_) => { };
                         using var connection = options.DryRun ? null : new OracleConnection(Config["CONNECTION_STRING"]);
                         var schema = Schema.Get(options.SchemaVersion, Config["TABLE_NAME"]);
+                        Log($"Using schema version {schema.Version}.");
                         await EnsureTableExists(connection, schema);
                         var transactions = GetSettledTransactions(
                             options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
@@ -79,6 +80,7 @@ namespace alma_authorizenet_payment_reporting
                     }
                 },
                 async (MigrateOptions migrateOptions) => { 
+                    Log = migrateOptions.Log ? Console.WriteLine : (_) => { };
                     using var connection = new OracleConnection(Config["CONNECTION_STRING"]);
                     var currentSchema = Schema.Get(migrateOptions.CurrentSchema, Config["TABLE_NAME"]);
                     var newSchema = Schema.Get(migrateOptions.NewSchema, Config["TABLE_NAME"]);
@@ -264,6 +266,8 @@ namespace alma_authorizenet_payment_reporting
                         }
                         else if (transaction.transactionStatus != "declined")
                         {
+                            // A record can be added here if we are considering Authorize.net to be the source of truth rather than Alma
+                            // records.Add(new FeePaymentRecord(almaUser, null, null, transaction, lineItem, batch));
                             LogMissingFeeError(almaUser, transaction, lineItem);
                         }
                     }

@@ -20,7 +20,7 @@ namespace alma_authorizenet_payment_reporting
 
         public FeePaymentRecord(AlmaUser user, Fee almaFee, Transaction almaTransaction, transactionDetailsType authorizeTransaction, lineItemType lineItem, batchDetailsType batch)
         {
-            AlmaFeeId = almaFee.Id;
+            AlmaFeeId = almaFee?.Id ?? lineItem.itemId;
             AuthorizeTransactionId = authorizeTransaction.transId;
             TransactionSubmitTime = authorizeTransaction.submitTimeUTC;
             TransactionSettledTime = batch?.settlementTimeUTC;
@@ -28,8 +28,8 @@ namespace alma_authorizenet_payment_reporting
             SettlementState = batch?.settlementState;
             PatronUserId = user.PrimaryId;
             PatronName = user.FullName;
-            PaymentCategory = almaFee.Type.Value;
-            PaymentAmount = Convert.ToDecimal(almaTransaction.Amount);
+            PaymentCategory = almaFee?.Type.Value ?? lineItem.name;
+            PaymentAmount = almaTransaction is not null ? Convert.ToDecimal(almaTransaction.Amount) : lineItem.unitPrice;
         }
     }
 }

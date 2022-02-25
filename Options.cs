@@ -23,6 +23,8 @@ namespace alma_authorizenet_payment_reporting
     [Verb("migrate")]
     public class MigrateOptions
     {
+        [Option('l', "log", Required = false, HelpText = "Log messages to stdout when set.")]
+        public bool Log { get; set; }
         [Value(0, Required = true)]
         public SchemaVersion CurrentSchema { get; set; }
         [Value(1, Default = SchemaVersion.V2)]
