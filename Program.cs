@@ -121,6 +121,7 @@ namespace alma_authorizenet_payment_reporting
                 fetch next 1 rows only");
         }
 
+        [Obsolete("This function is not currently in use, as we are only concerned with settled transactions.")]
         static IEnumerable<AuthorizeTransaction> GetTransactionsInDateRange(DateTime start, DateTime end)
         {
             start = start.ToUniversalTime();
@@ -131,6 +132,7 @@ namespace alma_authorizenet_payment_reporting
                 .Where(t => t.transaction.submitTimeUTC >= start && t.transaction.submitTimeUTC <= end);
         }
 
+        [Obsolete("This function is not currently in use, as we are only concerned with settled transactions.")]
         static IEnumerable<transactionDetailsType> GetUnsettledTransactions()
         {
             Log("Getting transactions that are not yet settled");

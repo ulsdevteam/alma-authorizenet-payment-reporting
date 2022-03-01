@@ -100,20 +100,6 @@ namespace alma_authorizenet_payment_reporting
                 primary key(AlmaFeeId, AuthorizeTransactionId)
             )
         ";
-
-        private string TableCreationSql(string tableName) => $@"
-            create table {TableName}
-            (
-                AlmaFeeId varchar2(100),
-                AuthorizeTransactionId varchar2(100),
-                TransactionSubmitTime date,
-                PatronUserId varchar2(100),
-                PatronName varchar2(100),
-                PaymentCategory varchar2(100),
-                PaymentAmount number,
-                primary key(AlmaFeeId, AuthorizeTransactionId)
-            )
-        ";
     }
 
     class SchemaV2 : Schema
