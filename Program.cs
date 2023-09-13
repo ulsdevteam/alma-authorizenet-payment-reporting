@@ -69,7 +69,8 @@ namespace alma_authorizenet_payment_reporting
                         await EnsureTableExists(connection, schema);
                         var transactions = GetSettledTransactions(
                             options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
-                            options.ToDate ?? DateTime.Today);
+                            options.ToDate ?? DateTime.Today)
+                            .Where(IsAlmaTransaction);
                         var records = await GetPaymentRecords(transactions);
                         await UpdateDatabase(connection, schema, records);
                         if (options.DryRun) Log($"Got {records.Count} records.");
@@ -90,6 +91,8 @@ namespace alma_authorizenet_payment_reporting
                 )
                 ;
         }
+
+        static bool IsAlmaTransaction(AuthorizeTransaction transaction) => transaction.transaction.order.invoiceNumber.StartsWith("ALMA");
 
         static async Task EnsureTableExists(IDbConnection connection, Schema schema)
         {
