@@ -13,6 +13,7 @@ using Flurl.Http;
 using System.Threading.Tasks;
 using Oracle.ManagedDataAccess.Client;
 using System.Data;
+using Newtonsoft.Json;
 
 namespace alma_authorizenet_payment_reporting
 {
@@ -69,8 +70,7 @@ namespace alma_authorizenet_payment_reporting
                         await EnsureTableExists(connection, schema);
                         var transactions = GetSettledTransactions(
                             options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
-                            options.ToDate ?? DateTime.Today)
-                            .Where(IsAlmaTransaction);
+                            options.ToDate ?? DateTime.Today);
                         var records = await GetPaymentRecords(transactions);
                         await UpdateDatabase(connection, schema, records);
                         if (options.DryRun) Log($"Got {records.Count} records.");
@@ -239,11 +239,20 @@ namespace alma_authorizenet_payment_reporting
         static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<AuthorizeTransaction> authorizeTransactions)
         {
             var records = new List<FeePaymentRecord>();
-            var transactionsGroupedByUser = authorizeTransactions
-                .Where(t => t.transaction.customer?.id is not null)
-                .GroupBy(t => t.transaction.customer.id);
+            var (almaTransactions, nonAlmaTransactions) = authorizeTransactions.SplitBy(IsAlmaTransaction);
+            foreach (var nonAlmaTransaction in nonAlmaTransactions)
+            {
+                LogNonAlmaTransaction(nonAlmaTransaction);
+            }
+            var transactionsGroupedByUser = almaTransactions
+                .GroupBy(t => t.transaction.customer?.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
             {
+                if (almaUserId is null)
+                {
+                    LogMissingUserIdTransactions(transactions);
+                    continue;
+                }
                 var almaUser = await AlmaClient
                     .Request("users", almaUserId)
                     .GetJsonAsync<AlmaUser>();
@@ -279,6 +288,16 @@ namespace alma_authorizenet_payment_reporting
                 }
             }
             return records;
+        }
+
+        static void LogNonAlmaTransaction(AuthorizeTransaction nonAlmaTransaction)
+        {
+            Console.Error.WriteLine($"NOTICE: Non-Alma Transaction:{Environment.NewLine}{JsonConvert.SerializeObject(nonAlmaTransaction, Formatting.Indented)}");
+        }
+
+        static void LogMissingUserIdTransactions(IEnumerable<AuthorizeTransaction> transactions)
+        {
+            Console.Error.WriteLine($"ISSUE: Alma Transactions missing Alma User Id:{Environment.NewLine}{JsonConvert.SerializeObject(transactions.ToList(), Formatting.Indented)}");
         }
 
         static void LogMissingFeeTransactionError(AlmaUser almaUser, transactionDetailsType transaction, Fee fee)
@@ -377,6 +396,15 @@ namespace alma_authorizenet_payment_reporting
         {
             key = grouping.Key;
             values = grouping;
+        }
+
+        // Extension method to split a list into two based on a predicate
+        static (List<T>, List<T>) SplitBy<T>(this IEnumerable<T> source, Func<T, bool> predicate)
+        {
+            var trueList = new List<T>();
+            var falseList = new List<T>();
+            foreach (var item in source) { (predicate(item) ? trueList : falseList).Add(item); }
+            return (trueList, falseList);
         }
     }
 }
