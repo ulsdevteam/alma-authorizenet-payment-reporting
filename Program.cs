@@ -264,6 +264,11 @@ namespace alma_authorizenet_payment_reporting
                     {
                         if (feeLookup.TryGetValue(lineItem.itemId, out var fee))
                         {
+                            if (fee.Transaction is null)
+                            {
+                                LogMissingFeeTransactionError(almaUser, transaction, fee);
+                                continue;
+                            }
                             var feeTransactions = fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId).ToList();
                             switch (feeTransactions.Count)
                             {
