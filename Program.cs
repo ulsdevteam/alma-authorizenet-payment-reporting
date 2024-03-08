@@ -65,9 +65,9 @@ namespace alma_authorizenet_payment_reporting
                     {
                         Log = options.Log ? Console.WriteLine : (_) => { };
                         using var connection = options.DryRun ? null : new OracleConnection(Config["CONNECTION_STRING"]);
-                        var schema = Schema.Get(options.SchemaVersion, Config["TABLE_NAME"]);
+                        var schema = Schema.Get(options.SchemaVersion, Config);
                         Log($"Using schema version {schema.Version}.");
-                        await EnsureTableExists(connection, schema);
+                        await EnsureTablesExist(connection, schema);
                         var transactions = GetSettledTransactions(
                             options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
                             options.ToDate ?? DateTime.Today);
@@ -83,8 +83,8 @@ namespace alma_authorizenet_payment_reporting
                 async (MigrateOptions migrateOptions) => { 
                     Log = migrateOptions.Log ? Console.WriteLine : (_) => { };
                     using var connection = new OracleConnection(Config["CONNECTION_STRING"]);
-                    var currentSchema = Schema.Get(migrateOptions.CurrentSchema, Config["TABLE_NAME"]);
-                    var newSchema = Schema.Get(migrateOptions.NewSchema, Config["TABLE_NAME"]);
+                    var currentSchema = Schema.Get(migrateOptions.CurrentSchema, Config);
+                    var newSchema = Schema.Get(migrateOptions.NewSchema, Config);
                     await MigrateTable(connection, currentSchema, newSchema);
                 },
                 errors => Task.CompletedTask
@@ -93,24 +93,28 @@ namespace alma_authorizenet_payment_reporting
         }
 
         static bool IsAlmaTransaction(AuthorizeTransaction transaction) => transaction.transaction.order.invoiceNumber.StartsWith("ALMA");
+        static bool IsAeonTransaction(AuthorizeTransaction transaction) => transaction.transaction.order.description.StartsWith("Payment for Aeon request(s)");
 
-        static async Task EnsureTableExists(IDbConnection connection, Schema schema)
+        static async Task EnsureTablesExist(IDbConnection connection, Schema schema)
         {
             if (connection is null) return;
-            Log($"Checking if table '{Config["TABLE_NAME"]}' exists.");
-            var result = await connection.QueryAsync(@"
-                select table_name
-                from user_tables
-                where table_name = :TableName
-            ", new { TableName = Config["TABLE_NAME"] });
-            if (!result.Any())
-            {
-                Log("Table does not exist, creating table.");
-                await connection.ExecuteAsync(schema.TableCreationSql());
-            }
-            else
-            {
-                Log("Table exists.");
+            foreach (Table table in schema.GetTables()){
+                var tableName = schema.GetName(table);
+                Log($"Checking if table '{tableName}' exists.");
+                var result = await connection.QueryAsync(@"
+                    select table_name
+                    from user_tables
+                    where table_name = :tableName
+                ", new { tableName });
+                if (!result.Any())
+                {
+                    Log("Table does not exist, creating table.");
+                    await connection.ExecuteAsync(schema.TableCreationSql(table));
+                }
+                else
+                {
+                    Log("Table exists.");
+                }
             }
         }
 
@@ -236,14 +240,17 @@ namespace alma_authorizenet_payment_reporting
             }
         }
 
-        static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<AuthorizeTransaction> authorizeTransactions)
+        static async Task<Dictionary<Table, IEnumerable<object>>> GetPaymentRecords(IEnumerable<AuthorizeTransaction> authorizeTransactions)
         {
-            var records = new List<FeePaymentRecord>();
+            var almaPayments = new List<AlmaFeePaymentRecord>();
+            var aeonPayments = new List<AeonFeePaymentRecord>();
             var (almaTransactions, nonAlmaTransactions) = authorizeTransactions.SplitBy(IsAlmaTransaction);
-            foreach (var nonAlmaTransaction in nonAlmaTransactions)
+            var (aeonTransactions, unrecognizedTransactions) = nonAlmaTransactions.SplitBy(IsAeonTransaction);
+            foreach (var transaction in unrecognizedTransactions)
             {
-                LogNonAlmaTransaction(nonAlmaTransaction);
+                LogUnrecognizedTransaction(transaction);
             }
+            aeonPayments.AddRange(aeonTransactions.Select(transaction => new AeonFeePaymentRecord(transaction.transaction, transaction.batch)));
             var transactionsGroupedByUser = almaTransactions
                 .GroupBy(t => t.transaction.customer?.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
@@ -273,7 +280,7 @@ namespace alma_authorizenet_payment_reporting
                             switch (feeTransactions.Count)
                             {
                                 case 1:
-                                    records.Add(new FeePaymentRecord(almaUser, fee, feeTransactions[0], transaction, lineItem, batch));
+                                    almaPayments.Add(new AlmaFeePaymentRecord(almaUser, fee, feeTransactions[0], transaction, lineItem, batch));
                                     break;
                                 case 0:
                                     LogMissingFeeTransactionError(almaUser, transaction, fee);
@@ -286,18 +293,21 @@ namespace alma_authorizenet_payment_reporting
                         else if (transaction.transactionStatus != "declined")
                         {
                             // A record can be added here if we are considering Authorize.net to be the source of truth rather than Alma
-                            // records.Add(new FeePaymentRecord(almaUser, null, null, transaction, lineItem, batch));
+                            // almaPayments.Add(new AlmaFeePaymentRecord(almaUser, null, null, transaction, lineItem, batch));
                             LogMissingFeeError(almaUser, transaction, lineItem);
                         }
                     }
                 }
             }
-            return records;
+            return new Dictionary<Table, IEnumerable<object>>{
+                [Table.Alma] = almaPayments,
+                [Table.Aeon] = aeonPayments
+            };
         }
 
-        static void LogNonAlmaTransaction(AuthorizeTransaction nonAlmaTransaction)
+        static void LogUnrecognizedTransaction(AuthorizeTransaction transaction)
         {
-            Console.Error.WriteLine($"NOTICE: Non-Alma Transaction:{Environment.NewLine}{JsonConvert.SerializeObject(nonAlmaTransaction, Formatting.Indented)}");
+            Console.Error.WriteLine($"NOTICE: Unrecognized Transaction:{Environment.NewLine}{JsonConvert.SerializeObject(transaction, Formatting.Indented)}");
         }
 
         static void LogMissingUserIdTransactions(IEnumerable<AuthorizeTransaction> transactions)
@@ -347,21 +357,25 @@ namespace alma_authorizenet_payment_reporting
                     .Request("users", almaUserId, "fees")
                     .SetQueryParam("status", status)
                     .GetJsonAsync<AlmaFees>();
-                return fees.Fee ?? new Fee[0];
+                return fees.Fee ?? Array.Empty<Fee>();
             }));
             return allFees.SelectMany(fees => fees);
         }
 
-        static async Task UpdateDatabase(IDbConnection connection, Schema schema, List<FeePaymentRecord> records)
+        static async Task UpdateDatabase(IDbConnection connection, Schema schema, Dictionary<Table, IEnumerable<object>> records)
         {
             if (connection is null) return;
-            if (records.Count == 0)
+            foreach (var table in schema.GetTables())
             {
-                Log("No transactions in this date range.");
-                return;
+                 if (!records[table].Any())
+                {
+                    Log($"No {table} transactions in this date range.");
+                    return;
+                }
+                Log($"Updating table {schema.GetName(table)} with {records[table].Count()} records.");
+                await connection.ExecuteAsync(schema.InsertDataSql(table), records[table]);
             }
-            Log($"Updating table with {records.Count} records.");
-            await connection.ExecuteAsync(schema.InsertDataSql(), records);
+           
         }
 
         static async Task MigrateTable(IDbConnection connection, Schema currentSchema, Schema newSchema) {

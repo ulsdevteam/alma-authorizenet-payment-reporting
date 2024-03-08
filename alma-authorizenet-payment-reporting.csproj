@@ -5,7 +5,7 @@
     <TargetFramework>net5.0</TargetFramework>
     <RootNamespace>alma_authorizenet_payment_reporting</RootNamespace>
     <Company>University of Pittsburgh</Company>
-    <Version>0.3.1</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

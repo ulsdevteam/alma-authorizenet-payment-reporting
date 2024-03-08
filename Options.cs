@@ -16,7 +16,7 @@ namespace alma_authorizenet_payment_reporting
         public bool Log { get; set; }
         [Option('d', "dryrun", Required = false, HelpText = "Will not connect to database when set.")]
         public bool DryRun { get; set; }
-        [Option('s', "schema-version", Default = SchemaVersion.V2, HelpText = "Which version of the reporting table schema to use.")]
+        [Option('s', "schema-version", Default = SchemaVersion.V3, HelpText = "Which version of the reporting table schema to use.")]
         public SchemaVersion SchemaVersion { get; set; }
     }
 
@@ -27,7 +27,7 @@ namespace alma_authorizenet_payment_reporting
         public bool Log { get; set; }
         [Value(0, Required = true)]
         public SchemaVersion CurrentSchema { get; set; }
-        [Value(1, Default = SchemaVersion.V2)]
+        [Value(1, Default = SchemaVersion.V3)]
         public SchemaVersion NewSchema { get; set; }
     }
 
