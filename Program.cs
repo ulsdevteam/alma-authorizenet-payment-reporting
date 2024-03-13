@@ -69,7 +69,7 @@ namespace alma_authorizenet_payment_reporting
                         Log($"Using schema version {schema.Version}.");
                         await EnsureTablesExist(connection, schema);
                         var transactions = GetSettledTransactions(
-                            options.FromDate ?? await GetMostRecentTransactionDate(connection) ?? DateTime.Today.AddMonths(-1),
+                            options.FromDate ?? await GetMostRecentTransactionDate(connection, schema) ?? DateTime.Today.AddMonths(-1),
                             options.ToDate ?? DateTime.Today);
                         var records = await GetPaymentRecords(transactions);
                         await UpdateDatabase(connection, schema, records);
@@ -118,14 +118,14 @@ namespace alma_authorizenet_payment_reporting
             }
         }
 
-        static async Task<DateTime?> GetMostRecentTransactionDate(IDbConnection connection)
+        static async Task<DateTime?> GetMostRecentTransactionDate(IDbConnection connection, Schema schema)
         {
             if (connection is null) return null;
             Log("Getting most recent transaction date");
-            return await connection.QueryFirstOrDefaultAsync<DateTime?>($@"
-                select TransactionSubmitTime from {Config["TABLE_NAME"]}
+            return (await Task.WhenAll(schema.GetTables().Select(table => connection.QueryFirstOrDefaultAsync<DateTime?>($@"
+                select TransactionSubmitTime from {schema.GetName(table)}
                 order by TransactionSubmitTime desc
-                fetch next 1 rows only");
+                fetch next 1 rows only")))).Max();
         }
 
         [Obsolete("This function is not currently in use, as we are only concerned with settled transactions.")]
