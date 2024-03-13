@@ -375,7 +375,7 @@ namespace alma_authorizenet_payment_reporting
                  if (!records[table].Any())
                 {
                     Log($"No {table} transactions in this date range.");
-                    return;
+                    continue;
                 }
                 Log($"Updating table {schema.GetName(table)} with {records[table].Count()} records.");
                 await connection.ExecuteAsync(schema.InsertDataSql(table), records[table]);
