@@ -255,7 +255,10 @@ namespace alma_authorizenet_payment_reporting
             {
                 LogUnrecognizedTransaction(transaction);
             }
-            aeonPayments.AddRange(aeonTransactions.Select(transaction => new AeonFeePaymentRecord(transaction.transaction, transaction.batch)));
+            aeonPayments.AddRange(aeonTransactions
+                .Where(transaction => transaction.transaction.transactionStatus != "declined")
+                .Select(transaction => new AeonFeePaymentRecord(transaction.transaction, transaction.batch))
+            );
             var transactionsGroupedByUser = almaTransactions
                 .GroupBy(t => t.transaction.customer?.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
