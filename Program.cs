@@ -73,7 +73,12 @@ namespace alma_authorizenet_payment_reporting
                             options.ToDate ?? DateTime.Today);
                         var records = await GetPaymentRecords(transactions);
                         await UpdateDatabase(connection, schema, records);
-                        if (options.DryRun) Log($"Got {records.Count} records.");
+                        if (options.DryRun) {
+                            foreach (var (table, tableRecords) in records)
+                            {
+                                Log($"{table}: Got {tableRecords.Count()} records.");
+                            }
+                        }
                     }
                     catch (System.Exception e)
                     {
