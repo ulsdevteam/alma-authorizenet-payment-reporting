@@ -1,5 +1,4 @@
 using System;
-using AuthorizeNet.Api.Contracts.V1;
 
 namespace alma_authorizenet_payment_reporting
 {
@@ -11,18 +10,20 @@ namespace alma_authorizenet_payment_reporting
         public DateTime? TransactionSettledTime { get; }
         public string TransactionStatus { get; }
         public string SettlementState { get; }
+        public string PatronName { get; }
         public string AeonTransactionNumbers { get; }
         public decimal PaymentAmount { get; }
 
-        public AeonFeePaymentRecord(transactionDetailsType authorizeTransaction, batchDetailsType batch)
+        public AeonFeePaymentRecord(AuthorizeTransaction transaction)
         {
-            AuthorizeTransactionId = authorizeTransaction.transId;
-            TransactionSubmitTime = authorizeTransaction.submitTimeUTC;
-            TransactionSettledTime = batch?.settlementTimeUTC;
-            TransactionStatus = authorizeTransaction.transactionStatus;
-            SettlementState = batch?.settlementState;
-            AeonTransactionNumbers = authorizeTransaction.order.description.Replace("Payment for Aeon request(s) ", "");
-            PaymentAmount = authorizeTransaction.authAmount;
+            AuthorizeTransactionId = transaction.transaction.transId;
+            TransactionSubmitTime = transaction.transaction.submitTimeUTC;
+            TransactionSettledTime = transaction.batch?.settlementTimeUTC;
+            TransactionStatus = transaction.transaction.transactionStatus;
+            SettlementState = transaction.batch?.settlementState;
+            PatronName = transaction.transaction.billTo.firstName + ' ' + transaction.transaction.billTo.lastName;
+            AeonTransactionNumbers = transaction.transaction.order.description.Replace("Payment for Aeon request(s) ", "");
+            PaymentAmount = transaction.transaction.authAmount;
         }
     }
 }

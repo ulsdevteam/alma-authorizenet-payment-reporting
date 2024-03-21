@@ -257,7 +257,7 @@ namespace alma_authorizenet_payment_reporting
             }
             aeonPayments.AddRange(aeonTransactions
                 .Where(transaction => transaction.transaction.transactionStatus != "declined")
-                .Select(transaction => new AeonFeePaymentRecord(transaction.transaction, transaction.batch))
+                .Select(transaction => new AeonFeePaymentRecord(transaction))
             );
             var transactionsGroupedByUser = almaTransactions
                 .GroupBy(t => t.transaction.customer?.id);

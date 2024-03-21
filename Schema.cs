@@ -269,6 +269,7 @@ namespace alma_authorizenet_payment_reporting
                     TransactionSettledTime,
                     TransactionStatus,
                     SettlementState,
+                    PatronName,
                     AeonTransactionNumbers,
                     PaymentAmount
                 )
@@ -279,6 +280,7 @@ namespace alma_authorizenet_payment_reporting
                     :TransactionSettledTime,
                     :TransactionStatus,
                     :SettlementState,
+                    :PatronName,
                     :AeonTransactionNumbers,
                     :PaymentAmount
                 );
@@ -288,6 +290,7 @@ namespace alma_authorizenet_payment_reporting
                     TransactionSettledTime = :TransactionSettledTime,
                     TransactionStatus = :TransactionStatus,
                     SettlementState = :SettlementState,
+                    PatronName = :PatronName,
                     AeonTransactionNumbers = :AeonTransactionNumbers,
                     PaymentAmount = :PaymentAmount
                 where
@@ -317,6 +320,7 @@ namespace alma_authorizenet_payment_reporting
                 TransactionSettledTime date null,
                 TransactionStatus varchar2(100),
                 SettlementState varchar2(100) null,
+                PatronName varchar2(100) null,
                 AeonTransactionNumbers varchar2(1000),
                 PaymentAmount number
             )";
