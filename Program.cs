@@ -239,7 +239,9 @@ namespace alma_authorizenet_payment_reporting
         static async Task<List<FeePaymentRecord>> GetPaymentRecords(IEnumerable<AuthorizeTransaction> authorizeTransactions)
         {
             var records = new List<FeePaymentRecord>();
-            var (almaTransactions, nonAlmaTransactions) = authorizeTransactions.SplitBy(IsAlmaTransaction);
+            var (almaTransactions, nonAlmaTransactions) = authorizeTransactions
+                .Where(t => t.transaction.transactionStatus != "declined")
+                .SplitBy(IsAlmaTransaction);
             foreach (var nonAlmaTransaction in nonAlmaTransactions)
             {
                 LogNonAlmaTransaction(nonAlmaTransaction);
@@ -283,10 +285,8 @@ namespace alma_authorizenet_payment_reporting
                                     break;
                             }
                         }
-                        else if (transaction.transactionStatus != "declined")
+                        else
                         {
-                            // A record can be added here if we are considering Authorize.net to be the source of truth rather than Alma
-                            // records.Add(new FeePaymentRecord(almaUser, null, null, transaction, lineItem, batch));
                             LogMissingFeeError(almaUser, transaction, lineItem);
                         }
                     }
