@@ -249,18 +249,16 @@ namespace alma_authorizenet_payment_reporting
         {
             var almaPayments = new List<AlmaFeePaymentRecord>();
             var aeonPayments = new List<AeonFeePaymentRecord>();
-            var (almaTransactions, nonAlmaTransactions) = authorizeTransactions.SplitBy(IsAlmaTransaction);
+            var (almaTransactions, nonAlmaTransactions) = authorizeTransactions
+                .Where(t => t.transaction.transactionStatus != "declined")
+                .SplitBy(IsAlmaTransaction);
             var (aeonTransactions, unrecognizedTransactions) = nonAlmaTransactions.SplitBy(IsAeonTransaction);
             foreach (var transaction in unrecognizedTransactions)
             {
                 LogUnrecognizedTransaction(transaction);
             }
-            aeonPayments.AddRange(aeonTransactions
-                .Where(transaction => transaction.transaction.transactionStatus != "declined")
-                .Select(transaction => new AeonFeePaymentRecord(transaction))
-            );
-            var transactionsGroupedByUser = almaTransactions
-                .GroupBy(t => t.transaction.customer?.id);
+            aeonPayments.AddRange(aeonTransactions.Select(transaction => new AeonFeePaymentRecord(transaction)));
+            var transactionsGroupedByUser = almaTransactions.GroupBy(t => t.transaction.customer?.id);
             foreach (var (almaUserId, transactions) in transactionsGroupedByUser)
             {
                 if (almaUserId is null)
@@ -279,16 +277,13 @@ namespace alma_authorizenet_payment_reporting
                     {
                         if (feeLookup.TryGetValue(lineItem.itemId, out var fee))
                         {
-                            if (fee.Transaction is null)
-                            {
-                                LogMissingFeeTransactionError(almaUser, transaction, fee);
-                                continue;
-                            }
-                            var feeTransactions = fee.Transaction.Where(t => t.ExternalTransactionId == transaction.transId).ToList();
-                            switch (feeTransactions.Count)
+                            var feeTransactions = fee.Transaction?
+                                .Where(t => t.ExternalTransactionId == transaction.transId).ToList()
+                                ?? Enumerable.Empty<Transaction>();
+                            switch (feeTransactions.Count())
                             {
                                 case 1:
-                                    almaPayments.Add(new AlmaFeePaymentRecord(almaUser, fee, feeTransactions[0], transaction, lineItem, batch));
+                                    almaPayments.Add(new AlmaFeePaymentRecord(almaUser, fee, feeTransactions.Single(), transaction, lineItem, batch));
                                     break;
                                 case 0:
                                     LogMissingFeeTransactionError(almaUser, transaction, fee);
@@ -298,10 +293,8 @@ namespace alma_authorizenet_payment_reporting
                                     break;
                             }
                         }
-                        else if (transaction.transactionStatus != "declined")
+                        else
                         {
-                            // A record can be added here if we are considering Authorize.net to be the source of truth rather than Alma
-                            // almaPayments.Add(new AlmaFeePaymentRecord(almaUser, null, null, transaction, lineItem, batch));
                             LogMissingFeeError(almaUser, transaction, lineItem);
                         }
                     }
