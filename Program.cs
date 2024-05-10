@@ -250,7 +250,8 @@ namespace alma_authorizenet_payment_reporting
             var almaPayments = new List<AlmaFeePaymentRecord>();
             var aeonPayments = new List<AeonFeePaymentRecord>();
             var (almaTransactions, nonAlmaTransactions) = authorizeTransactions
-                .Where(t => t.transaction.transactionStatus != "declined")
+                .Where(t => t.transaction.transactionType == "authCaptureTransaction" 
+                        && t.transaction.transactionStatus != "declined")
                 .SplitBy(IsAlmaTransaction);
             var (aeonTransactions, unrecognizedTransactions) = nonAlmaTransactions.SplitBy(IsAeonTransaction);
             foreach (var transaction in unrecognizedTransactions)
@@ -273,6 +274,11 @@ namespace alma_authorizenet_payment_reporting
 
                 foreach (var (transaction, batch) in transactions)
                 {
+                    if (transaction.lineItems is null)
+                    {
+                        LogMissingLineItemsError(almaUser, transaction);
+                        continue;
+                    }
                     foreach (var lineItem in transaction.lineItems)
                     {
                         if (feeLookup.TryGetValue(lineItem.itemId, out var fee))
@@ -347,6 +353,16 @@ namespace alma_authorizenet_payment_reporting
                 $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
                 $"Alma User Id: {almaUser.PrimaryId}",
                 $"Line Item Id (Expected Alma Fee Id): {lineItem.itemId}"));
+        }
+
+        static void LogMissingLineItemsError(AlmaUser almaUser, transactionDetailsType transaction)
+        {
+            Console.Error.WriteLine(string.Join(Environment.NewLine,
+                "ISSUE: Alma transaction with no line items (this shouldn't happen)",
+                $"Transaction Id: {transaction.transId}",
+                $"Transaction Status: {transaction.transactionStatus}",
+                $"Transaction Submit Time: {transaction.submitTimeUTC.ToLocalTime()}",
+                $"Alma User Id: {almaUser.PrimaryId}"));
         }
 
         static async Task<IEnumerable<Fee>> GetAllFeesForUser(string almaUserId)

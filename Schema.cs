@@ -76,7 +76,6 @@ namespace alma_authorizenet_payment_reporting
         public SchemaV1(string tableName) : base(SchemaVersion.V1, tableName) { }
 
         public override bool Supports(Table table) => table == Table.Alma;
-
        
         public override string InsertDataSql(Table table)
         {
