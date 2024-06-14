@@ -69,7 +69,9 @@ namespace alma_authorizenet_payment_reporting
                         Log($"Using schema version {schema.Version}.");
                         await EnsureTablesExist(connection, schema);
                         var transactions = GetSettledTransactions(
-                            options.FromDate ?? await GetMostRecentTransactionDate(connection, schema) ?? DateTime.Today.AddMonths(-1),
+                            options.FromDate 
+                                ?? (await GetMostRecentTransactionDate(connection, schema))?.AddDays(-2) 
+                                ?? DateTime.Today.AddMonths(-1),
                             options.ToDate ?? DateTime.Today);
                         var records = await GetPaymentRecords(transactions);
                         await UpdateDatabase(connection, schema, records);
